@@ -1,0 +1,21 @@
+# 敏感文件 — 禁止提交
+.env
+.secrets/
+*.env
+!*.env.example
+
+# SSH 密钥
+*.pem
+*.key
+id_ed25519
+id_rsa
+id_ecdsa
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 系统
+.DS_Store
+*.log
