@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: |
+          for f in *.sh; do
+            echo "Checking $f..."
+            bash -n "$f"
+          done
+
+      - name: Python syntax check
+        run: |
+          for f in *.py; do
+            echo "Checking $f..."
+            python3 -m py_compile "$f"
+          done
+
+      - name: Pre-push sensitive data check
+        run: |
+          chmod +x pre_push_check.sh
+          git add -A 2>/dev/null || true
+          bash pre_push_check.sh
+
+      - name: ShellCheck (if available)
+        run: |
+          if command -v shellcheck &>/dev/null; then
+            shellcheck -S warning *.sh
+          else
+            echo "shellcheck not installed, skipping"
+          fi
