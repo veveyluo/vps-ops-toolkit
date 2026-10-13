@@ -8,7 +8,7 @@
 ## 环境信息
 
 - **VPS**: Google Cloud Platform e2-micro，958MB 内存
-- **SSH**: `ssh -i ~/.ssh/gcp_vps_id_ed25519 -p <YOUR_SSH_PORT> ANAI@<YOUR_VPS_IP>`
+- **SSH**: `ssh -i ~/.ssh/<YOUR_SSH_KEY> -p <YOUR_SSH_PORT> <YOUR_SSH_USER>@<YOUR_VPS_IP>`
 - **域名**: `openclaw.<YOUR_DOMAIN>`（通过 Caddy 反代）
 - **OpenClaw**: npm 全局安装，版本 2026.9.2
 - **AI 后端**: AgentScope 平台 (`platform.agentscope.io`)
@@ -33,7 +33,7 @@
 - crash-loop breaker 触发后需要等 5 分钟冷却，清除 stability 记录后才能重启：
   ```bash
   sudo systemctl stop openclaw
-  rm -f /home/ANAI/.openclaw/logs/stability/*.json
+  rm -f /home/<YOUR_SSH_USER>/.openclaw/logs/stability/*.json
   # 等 5 分钟
   sudo systemctl start openclaw
   ```
@@ -255,7 +255,7 @@ ExecStart=/usr/bin/openclaw gateway
 {
   "agents": {
     "defaults": {
-      "workspace": "/home/ANAI/.openclaw/workspace",
+      "workspace": "/home/<YOUR_SSH_USER>/.openclaw/workspace",
       "model": "openai/qwen3.8-max"
     }
   },
@@ -336,7 +336,7 @@ sudo systemctl restart openclaw
 
 # 如果 crash-loop 了
 sudo systemctl stop openclaw
-rm -f /home/ANAI/.openclaw/logs/stability/*.json
+rm -f /home/<YOUR_SSH_USER>/.openclaw/logs/stability/*.json
 # 等 5 分钟
 sudo systemctl start openclaw
 ```
@@ -346,7 +346,7 @@ sudo systemctl start openclaw
 # 编辑配置
 python3 -c "
 import json
-f='/home/ANAI/.openclaw/openclaw.json'
+f='/home/<YOUR_SSH_USER>/.openclaw/openclaw.json'
 with open(f) as fh: cfg=json.load(fh)
 # 修改...
 with open(f,'w') as fh: json.dump(cfg,fh,indent=2)
