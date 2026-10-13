@@ -34,7 +34,7 @@ fi
 OUT=$("${SSH[@]}" '
 echo "CPU: $(nproc) cores"
 echo "Mem: $(free -h | awk "/^Mem:/{print \$2\" total, \"\$7\" available\"}")"
-echo "Disk: $(df -h / | awk "NR==2{print \$4\" free of \"\$2\" (\"$5\" used)\"}")"
+echo "Disk: $(df -h / | awk "NR==2{print \$4\" free of \"\$2\" (\"\$5\" used)\"}")"
 echo "Uptime: $(uptime -p 2>/dev/null || uptime)"
 ' 2>&1)
 RC=$?

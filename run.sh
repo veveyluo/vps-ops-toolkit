@@ -42,8 +42,11 @@ run_check() {
       bash check_vps.sh || fail=1
       ;;
     service)
-      local svc="${2:?用法: run.sh check service <service-name>}"
-      bash check_service.sh "$svc" || fail=1
+      if [ -z "${2:-}" ]; then
+        echo "用法: run.sh check service <service-name>"
+        return 2
+      fi
+      bash check_service.sh "$2" || fail=1
       ;;
     all)
       echo "========== 全部检查 =========="
