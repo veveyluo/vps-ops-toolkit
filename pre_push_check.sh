@@ -65,7 +65,7 @@ while IFS= read -r f; do
   fi
 
   # 4. 私有路径
-  PATH_PATTERNS='/run/csi|/home/hermes|site-packages/qwenpaw|/app/working'
+  PATH_PATTERNS='/run/csi|/home/<YOUR_USER>|site-packages/qwenpaw|/app/working'
   PATH_MATCHES=$(grep -nP "$PATH_PATTERNS" "$f" 2>/dev/null | grep -v 'PATH_PATTERNS=' || true)
   if [ -n "$PATH_MATCHES" ]; then
     echo "⚠️  $f: 疑似内部路径"
