@@ -56,7 +56,7 @@ while IFS= read -r f; do
   done
 
   # 3. 内网/敏感端口（排除通用 22/80/443/8080/1080）
-  SENSITIVE_PORTS=':(25774|41080|41084|8088|30208|43253|49815|64614|2052|2222|39540|4083)\b'
+  SENSITIVE_PORTS=':(YOUR_PORT_1|YOUR_PORT_2|YOUR_PORT_3)\b'
   PORT_MATCHES=$(grep -nP "$SENSITIVE_PORTS" "$f" 2>/dev/null || true)
   if [ -n "$PORT_MATCHES" ]; then
     echo "⚠️  $f: 疑似敏感端口"
