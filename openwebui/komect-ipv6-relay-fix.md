@@ -1,8 +1,8 @@
-# OpenWebUI komect 广东移动模型 IPv6 中继修复
+# OpenWebUI komect 广东节点 IPv6 中继修复
 
 ## 问题
 
-OpenWebUI（Docker 容器）配置了 komect 广东移动的三个模型，浏览器使用时报 `Server Connection Error`，但偶尔能短暂回复一次。
+OpenWebUI（Docker 容器）配置了 komect 广东节点的三个模型，浏览器使用时报 `Server Connection Error`，但偶尔能短暂回复一次。
 
 ## 环境
 
@@ -19,7 +19,7 @@ komect 域名同时有 A（IPv4）和 AAAA（IPv6）记录：
 | A | `<KOMECT_IPV4>` | TCP 能连但不稳定，约 60% 失败率 |
 | AAAA | `<KOMECT_IPV6>` | 稳定可达，0% 丢包 |
 
-**IPv4 不可靠的原因**：IPv4 地址属于中国移动地址段，从海外 VPS 经中国移动骨干网路由，中途有 20-60% 丢包。ICMP（ping）100% 被封，但 TCP 443 偶尔能通。
+**IPv4 不可靠的原因**：IPv4 地址属于中国大陆运营商地址段，从海外 VPS 经中国大陆骨干网路由，中途有 20-60% 丢包。ICMP（ping）100% 被封，但 TCP 443 偶尔能通。
 
 **容器无法使用 IPv6 的原因**：Docker bridge 网络默认不分配公网 IPv6 地址，容器只有 IPv4 出口。
 
@@ -160,7 +160,7 @@ echo | openssl s_client -connect <KOMECT_IPV4>:443 -servername <KOMECT_DOMAIN> 2
 
 ## 踩过的坑
 
-1. **ping 全丢 ≠ 不可达**：ICMP 被中国移动骨干网封了，但 TCP 443 偶尔能通。判断可达性要用 TCP 层测试（curl/openssl），不能用 ping
+1. **ping 全丢 ≠ 不可达**：ICMP 被中国大陆骨干网封了，但 TCP 443 偶尔能通。判断可达性要用 TCP 层测试（curl/openssl），不能用 ping
 2. **curl Happy Eyeballs 陷阱**：VPS 上 curl 自动选 IPv6 绕过不可靠 IPv4，让 API 测试"通过"，但容器被 extra_hosts 锁死 IPv4 且无 IPv6 出口。测试时要显式指定 `-4`/`-6` 分别验证
 3. **API 测试通 ≠ 浏览器可用**：用 JWT token + curl 从 VPS 内部测 API 绕过了网络层差异。容器实际走的是 extra_hosts 锁定的 IPv4 路径
 4. **Docker 网关不转发到宿主机 socket**：容器连 `172.18.0.1:443` 被拒绝（ConnectionRefused），需用宿主机外部 IP
