@@ -1,7 +1,7 @@
 # OpenClaw 部署运维手册
 
 > 记录 OpenClaw 在 GCP VPS 上的完整部署过程、踩过的所有坑、以及最终可用配置。
-> 日期：2026-10-14 | OpenClaw 版本：2026.9.2 | VPS：GCP e2-micro (958MB RAM)
+> 日期：2026-10-15（第二版） | OpenClaw 版本：2026.9.2 | VPS：GCP e2-micro (958MB RAM)
 
 ---
 
@@ -11,9 +11,10 @@
 - **SSH**: `ssh -i ~/.ssh/<YOUR_SSH_KEY> -p <YOUR_SSH_PORT> <YOUR_SSH_USER>@<YOUR_VPS_IP>`
 - **域名**: `openclaw.<YOUR_DOMAIN>`（通过 Caddy 反代）
 - **OpenClaw**: npm 全局安装，版本 2026.9.2
-- **AI 后端**: <PLATFORM_NAME> 平台 (`<PLATFORM_DOMAIN>`)
+- **AI 后端**: <PLATFORM_NAME> 平台 (`<PLATFORM_DOMAIN>`)，免费档
 - **API Key**: <PLATFORM_NAME> 平台 key，格式 `<API_KEY_PREFIX>-xxxxx`
-- **反向代理**: Caddy → localhost:18789
+- **反向代理**: Caddy (80/443) → localhost:18789
+- **防火墙**: ufw，只放行 SSH + Caddy + VPN 端口
 
 ---
 
@@ -28,8 +29,8 @@
 **根因**：e2-micro 只有 958MB 内存，OpenClaw Gateway 启动时 SQLite 初始化 + 插件加载消耗大量内存，OOM killer 直接杀进程。
 
 **解决**：
-- 插件从 39 个砍到 2 个（大幅降低内存占用）
-- 启动时间从 >30s 降到 2.3s
+- 插件从 39 个砍到最小必要集（大幅降低内存占用）
+- 启动时间从 >30s 降到 ~15s
 - crash-loop breaker 触发后需要等 5 分钟冷却，清除 stability 记录后才能重启：
   ```bash
   sudo systemctl stop openclaw
@@ -46,11 +47,9 @@
 
 **现象**：Gateway 启动慢、内存占用高、部分插件报错。
 
-**根因**：OpenClaw 默认安装大量插件（gmail-watcher、各种集成等），大部分用不到但都占内存。
+**根因**：OpenClaw 默认安装大量插件，大部分用不到但都占内存。
 
-**解决**：在 Settings → Plugins 页面禁用所有非必要插件，只保留：
-- `openai`（AI 模型 provider）
-- `opencode-go`（备用 provider）
+**解决**：禁用所有非必要插件。最终只保留 memory-core（记忆核心）。
 
 **教训**：部署后第一时间审查插件列表，禁用不用的。
 
@@ -66,187 +65,225 @@
 
 ---
 
-### 坑 4：Command Owner 未设置 ⚠️
-
-**现象**：部分命令无法执行，权限不明确。
-
-**解决**：在配置中设置 owner。
-
----
-
-### 坑 5：opencode-go provider 的 API 格式硬编码为 Anthropic Messages ⚠️⚠️⚠️⚠️
+### 坑 4：opencode-go provider 的 API 格式硬编码 ⚠️⚠️⚠️⚠️
 
 **这是最深的坑，耗费最多时间排查。**
 
-**现象**：使用 `opencode-go/qwen3.8-max` 发消息时报 400 错误：
-```
-LLM request failed: provider rejected the request schema or tool payload.
-```
+**现象**：使用 `opencode-go/qwen3.8-max` 发消息时报 400 错误。
 
-**排查过程**：
-1. 查日志发现请求发到了 `https://<PROVIDER_DOMAIN>/zen/go/v1/messages`（Anthropic Messages 格式 endpoint）
-2. 但 <PLATFORM_NAME> 平台只支持 OpenAI 兼容格式（`/v1/chat/completions`）
-3. 查源码 `provider-catalog-BFfam1xM.js`，发现 `qwen3.8-max` 模型被硬编码：
-   ```js
-   {
-     "id": "qwen3.8-max",
-     "name": "Qwen3.8 Max",
-     "api": "anthropic-messages",  // ← 硬编码，无法通过配置修改
-     "baseUrl": "https://<PROVIDER_DOMAIN>/zen/go"
-   }
-   ```
+**根因**：OpenClaw 的 opencode-go provider 是为官方 AI 网关设计的，`qwen3.8-max` 在 catalog 里绑定了 `anthropic-messages` 格式，且 baseUrl 硬编码指向官方服务器。第三方平台只支持 OpenAI 兼容格式，格式不兼容。
 
-**根因**：OpenClaw 的 opencode-go provider 是为 OpenCode 官方 AI 网关设计的，不是给第三方平台用的。`qwen3.8-max` 这个模型在 catalog 里绑定了 `anthropic-messages` 格式，且 baseUrl 硬编码指向 `<PROVIDER_DOMAIN>`。
+**解决**：弃用 opencode-go provider，改用自定义 provider（见坑 11）。
 
-**opencode-go provider 模型列表及 API 格式**：
-
-| 模型 ID | API 格式 | 备注 |
-|---------|----------|------|
-| deepseek-v4-pro | openai-completions（默认） | <PLATFORM_NAME> 有此模型 |
-| deepseek-v4-flash | openai-completions（默认） | <PLATFORM_NAME> 上 404，不可用 |
-| kimi-k3 | openai-completions（默认） | <PLATFORM_NAME> 有此模型 |
-| kimi-k2.6 | openai-completions（默认） | <PLATFORM_NAME> 无此模型 |
-| gpt-5.6-luna | openai-responses | <PLATFORM_NAME> 无此模型 |
-| qwen3.8-max | **anthropic-messages（硬编码）** | <PLATFORM_NAME> 有此模型，但格式不兼容 |
-| hy3-preview | 默认 | <PLATFORM_NAME> 无此模型 |
-
-**教训**：opencode-go provider 的 baseUrl 硬编码指向 `<PROVIDER_DOMAIN>`，即使配了 <PLATFORM_NAME> 的 API key，请求也发到 OpenCode 官方服务器而非 <PLATFORM_NAME> 平台。不要用 opencode-go provider 连第三方平台。
+**教训**：不要用 opencode-go provider 连第三方平台。
 
 ---
 
-### 坑 6：openai provider 的模型名不在 catalog 中 ⚠️⚠️⚠️⚠️
+### 坑 5：openai provider 的模型名不在 catalog 中 ⚠️⚠️⚠️⚠️
 
-**这是第二个核心坑。**
+**现象**：改用 `openai/qwen3.8-max` 后报 `Unknown model`。
 
-**现象**：改用 `openai/qwen3.8-max` 后报：
-```
-Unknown model: openai/qwen3.8-max
-```
+**根因**：OpenClaw 的 openai provider 只认识 OpenAI 官方模型名，不认识第三方平台的模型名。有两层检查：
+- model-fetch 层（发 HTTP 请求）：通过 `OPENAI_BASE_URL` 环境变量能连到第三方平台
+- agent runtime 层（检查 catalog）：发现模型未注册，拒绝执行
 
-**排查过程**：
-1. openai provider 确实通过 `OPENAI_BASE_URL` 环境变量连到了 <PLATFORM_NAME> 平台
-2. 日志里曾有 `status=200` 的成功记录（说明连通性没问题）
-3. 但 agent runtime 层（不是 model-fetch 层）检查模型 catalog，发现 `qwen3.8-max` 不在 openai provider 的已知模型列表中
-4. OpenClaw 的 openai provider 只认识 OpenAI 官方模型名（gpt-4, gpt-5.6-sol 等），不认识第三方平台的模型名
+**解决**：在 `openclaw.json` 的 `models.providers.{provider}.models` 数组中手动注册自定义模型。
 
-**根因**：OpenClaw 有两层检查：
-- **model-fetch 层**：负责发 HTTP 请求，通过 `OPENAI_BASE_URL` 能正确连到 <PLATFORM_NAME>（status=200）
-- **agent runtime 层**：负责工具定义、系统提示词等，会检查模型是否在 catalog 中注册
+**源码依据**：`buildConfiguredModelCatalog()` 函数从 config 的 `models.providers.{provider}.models` 数组构建自定义模型目录。
 
-model-fetch 层能通，但 agent runtime 层拒绝未知模型名。
+**教训**：OpenClaw 不会自动从第三方 API 的 `/models` 接口发现模型。必须手动在 config 中注册。
 
-**解决**：在 `openclaw.json` 的 `models.providers.openai.models` 数组中手动注册自定义模型：
+---
+
+### 坑 6：systemd 环境变量中的 API key 被截断 ⚠️⚠️⚠️
+
+**现象**：模型注册成功后，聊天报 401 认证失败。
+
+**根因**：systemd service 文件里的 `OPENAI_API_KEY` 只有 13 个字符（完整 key 应该是 52 字符），可能是配置时复制粘贴截断。
+
+**解决**：写入完整 key 到 systemd env var + config 双保险。
+
+**教训**：配置 API key 后一定要用 `wc -c` 验证长度。
+
+---
+
+### 坑 7：OPENAI_BASE_URL 环境变量 vs config baseUrl ⚠️⚠️
+
+**现象**：在 config 中设置 `baseUrl` 不生效，但环境变量 `OPENAI_BASE_URL` 生效。
+
+**根因**：openai provider 通过 `resolveOpenAIEnvironmentBaseUrl()` 函数从环境变量读取 baseUrl，不从 config 的 `baseUrl` 字段读。
+
+**解决**：用环境变量 `OPENAI_BASE_URL` 设置平台地址。
+
+**教训**：OpenClaw openai provider 读取 baseUrl 的优先级是 model.baseUrl > OPENAI_BASE_URL env var，provider 级别的 baseUrl 配置不被识别。
+
+---
+
+### 坑 8：设备配对审批无法关闭 ⚠️⚠️
+
+**现象**：想关闭设备配对审批，但 `devicePairing` 不是合法配置项，加了反而 gateway 崩溃。
+
+**根因**：设备配对是 OpenClaw 核心安全机制，不能通过配置关闭。密码模式下也仍然需要。
+
+**解决**：改回 token 模式，依赖已批准设备连接。新设备通过 Settings → Devices 审批，或 SSH 跑 `openclaw devices join-code` 生成一次性配对链接。
+
+---
+
+### 坑 9：Caddy WebSocket 403 ⚠️⚠️
+
+**现象**：Control UI WebSocket 连接被 Caddy 拒绝，返回 403。
+
+**根因**：Caddy 配置里的 `encode gzip zstd` 干扰 WebSocket 升级。
+
+**解决**：从 Caddy 配置中删除 `encode gzip zstd`。
+
+---
+
+### 坑 10：openai 插件自带 30+ 模型目录 ⚠️⚠️⚠️
+
+**这是第二版部署时发现的核心坑。**
+
+**现象**：设置 `models.mode = "replace"` 后，刷新模型目录仍然出现 30 多个 OpenAI 官方收费模型。
+
+**根因**：openai 插件内置了 OpenAI 官方模型目录（gpt-4、gpt-3.5-turbo 等），只要插件启用且配了 API key，内置目录就会显示。`mode: "replace"` 只控制哪些 provider 生效，管不住单个 provider 的内置 catalog。
+
+**解决**：禁用 openai 插件，改用自定义 provider（名称如 `custom`），在 config 里只放我们手动注册的模型。这样内置的 30+ 模型不再加载。
+
+**教训**：OpenClaw 的 `models.mode = "replace"` 不是万能的。内置插件的 catalog 需要通过禁用插件来移除。
+
+---
+
+### 坑 11：自定义 provider 的 baseUrl 必须显式设置 ⚠️⚠️
+
+**现象**：禁用 openai 插件改用自定义 provider 后，刷新模型目录又冒出 30+ 模型。
+
+**根因**：自定义 provider 没设 `baseUrl`，刷新时走默认 OpenAI API（`api.openai.com/v1/models`）拉回 30+ 官方模型。
+
+**解决**：在自定义 provider 配置里显式设 `baseUrl` 指向第三方平台：
 ```json
 {
   "models": {
+    "mode": "replace",
     "providers": {
-      "openai": {
+      "custom": {
+        "baseUrl": "https://<PLATFORM_DOMAIN>/compatible-mode/v1",
         "apiKey": "<API_KEY_PREFIX>-XXXXX",
-        "models": [
-          {
-            "id": "qwen3.8-max",
-            "name": "Qwen3.8 Max",
-            "api": "openai-completions",
-            "contextWindow": 131072,
-            "input": ["text", "image"]
-          }
-        ]
+        "models": [...]
       }
     }
   }
 }
 ```
 
-**源码依据**：`model-selection-shared-BlLyx1r2.js` 中的 `buildConfiguredModelCatalog()` 函数会从 `cfg.models.providers.{provider}.models` 数组构建自定义模型目录。每个 model 支持的字段：
-- `id`：模型 ID（必填）
-- `name`：显示名称
-- `api`：API 格式（`openai-completions` / `openai-responses` / `anthropic-messages`）
-- `baseUrl`：覆盖 provider 的 baseUrl
-- `contextWindow`：上下文窗口大小
-- `contextTokens`：上下文 token 数
-- `reasoning`：是否支持推理（boolean）
-- `input`：输入类型数组（`["text", "image"]`）
-- `params`：模型参数
-- `compat`：兼容性设置
-
-**教训**：OpenClaw 不会自动从第三方 API 的 `/models` 接口发现模型。必须手动在 config 中注册自定义模型名。
+**教训**：自定义 provider 必须设 `baseUrl`，否则模型目录刷新会走默认 OpenAI API。
 
 ---
 
-### 坑 7：systemd 环境变量中的 API key 被截断 ⚠️⚠️⚠️
+### 坑 12：误加不支持的配置键导致 Gateway 崩溃 ⚠️⚠️⚠️
 
-**现象**：模型注册成功后，聊天报 401 认证失败：
-```
-openai/qwen3.8-max request failed (authentication failed, HTTP 401)
-```
+**现象**：在 config 里加了 `models.default` 或 `gateway.auth.rateLimit`，Gateway 启动报 `CONFIG` 错误直接退出。
 
-**排查过程**：
-1. 检查 systemd service 文件，发现 `OPENAI_API_KEY=<API_KEY_PREFIX>-...WJZE`
-2. 用 `wc -c` 验证，key 值只有 13 个字符（完整 key 应该是 52 字符）
-3. 这不是 UI 脱敏显示，而是 **systemd 文件里真的存了截断的 key**
+**根因**：OpenClaw 的 config schema 有严格校验，不认识的键直接拒绝启动。`models.default`、`gateway.auth.rateLimit` 都不是合法键。
 
-**根因**：初始配置 systemd service 时，API key 被意外截断（可能是复制粘贴时的问题，或者从某处引用了脱敏后的值）。
+**解决**：删掉不合法的键。默认模型通过 `agents.defaults.model` 设置（不是 `models.default`）。
+
+**教训**：改 config 前先跑 `openclaw config schema` 确认键名。不确定的键不要加。
+
+---
+
+### 坑 13：restart-loop breaker 反复触发 ⚠️⚠️
+
+**现象**：Gateway 崩溃后 systemd 自动重启，连续崩溃几次后 restart-loop breaker 触发，即使修好了配置也无法启动。
+
+**根因**：breaker 统计 300 秒内的崩溃次数，超过阈值就锁定，阻止 gateway 自动启动 channel/provider。
 
 **解决**：
 ```bash
-# 修复 systemd env var
-sudo sed -i "s|Environment=OPENAI_API_KEY=.*|Environment=OPENAI_API_KEY=<API_KEY_PREFIX>-完整KEY|" /etc/systemd/system/openclaw.service
-sudo systemctl daemon-reload
-
-# 同时在 openclaw.json config 里也设置 apiKey（双保险）
+sudo systemctl stop openclaw
+sudo systemctl reset-failed openclaw
+rm -f /home/<YOUR_SSH_USER>/.openclaw/logs/stability/*.json
+# 等 5 分钟让 300s 窗口过期
+sudo systemctl start openclaw
 ```
 
-**教训**：配置 API key 后一定要用 `wc -c` 或 `echo -n $KEY | wc -c` 验证长度，不能只看开头结尾像不像对的。
+**教训**：改 config 后如果 Gateway 崩了，不要反复重启。先修好 config，清 stability 记录，等 5 分钟再启动。
 
 ---
 
-### 坑 8：OPENAI_BASE_URL 环境变量 vs config baseUrl ⚠️⚠️
+### 坑 14：模型名变更后旧会话找不到模型 ⚠️⚠️
 
-**现象**：在 config 中设置 `baseUrl` 不生效，但环境变量 `OPENAI_BASE_URL` 生效。
+**现象**：从 `openai` provider 改成 `custom` provider 后，旧会话报 `Unknown model: openai/qwen3.8-max`。
 
-**排查**：
-1. 源码 `provider-policy-api-CAxxTyEq.js` 中有 `resolveOpenAIEnvironmentBaseUrl()` 函数：
-   ```js
-   function resolveOpenAIEnvironmentBaseUrl(context) {
-     return (context.env ?? process.env).OPENAI_BASE_URL;
-   }
-   ```
-2. openai provider 通过环境变量读取 baseUrl，不是从 config 的 `baseUrl` 字段读
-3. 但自定义模型注册时的 `model.baseUrl` 字段可以覆盖 provider 的 baseUrl
+**根因**：旧会话的模型选择器还引用旧 provider 名 `openai/xxx`，但 openai 插件已禁用。
 
-**最终方案**：用环境变量 `OPENAI_BASE_URL` 设置 <PLATFORM_NAME> 平台地址，不在 config 里设 baseUrl。
+**解决**：更新 `agents.defaults.model` 为新 provider 名：
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "custom/qwen3.8-max",
+        "fallbacks": ["custom/glm-5.2", "custom/qwen3.8-flash"]
+      }
+    }
+  }
+}
+```
 
-**教训**：OpenClaw 的 openai provider 读取 baseUrl 的优先级是：model.baseUrl > provider.baseUrl > OPENAI_BASE_URL env var。但 provider 级别的 baseUrl 配置项不被 openai provider 识别。
-
----
-
-### 坑 9：密码模式未设置 ⚠️
-
-**现象**：OpenClaw Control UI 直接开放，无密码保护。
-
-**解决**：设置密码模式，密码：`<YOUR_PASSWORD>`
+**教训**：改 provider 名后，`agents.defaults.model` 里的引用要同步更新。
 
 ---
 
-### 坑 10：设备审批机制 ⚠️
+### 坑 15：8080 端口公网暴露 ⚠️⚠️
 
-**配置**：
-- Owner 已有权限，可通过 Settings → Devices 审批新设备
-- join-code 方式可免审批自动配对
+**现象**：订阅服务（busybox httpd）监听 `*:8080`，公网可访问。
+
+**解决**：改 systemd service 配置，绑定到 `127.0.0.1:8080`：
+```bash
+sudo sed -i 's/-p 8080/-p 127.0.0.1:8080/' /etc/systemd/system/busybox-httpd.service
+sudo systemctl daemon-reload
+sudo systemctl restart busybox-httpd
+```
+
+**教训**：部署后检查所有监听端口，不需要公网访问的服务一律收回 localhost。
 
 ---
 
-## 最终可用配置
+### 坑 16：GCP 1GB 内存导致响应慢 ⚠️⚠️⚠️
+
+**现象**：新建会话 + 首次回复需要 18-20 秒，用户体验差。
+
+**根因**：OpenClaw Gateway 占 ~389MB（40% 内存），新建会话时需要启动 agent 进程 + 加载工作区 + 读文件初始化，1GB 机器大量靠 swap 撑。
+
+**解决**：暂无根治方案。设了 `NODE_COMPILE_CACHE` 和 `OPENCLAW_NO_RESPAWN` 环境变量优化性能，但改善有限。
+
+**教训**：OpenClaw 是重型 Node.js 应用，1GB 内存勉强能跑但体验差。建议部署在 ≥2GB 内存的机器上。
+
+---
+
+## 最终可用配置（2026-10-15 第二版）
 
 ### systemd service (/etc/systemd/system/openclaw.service)
 
 ```ini
+[Unit]
+Description=OpenClaw Gateway
+After=network.target
+
 [Service]
-Environment=OPENAI_API_KEY=<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>
+Environment=NODE_OPTIONS=--max-old-space-size=768
+Environment=OPENAI_API_KEY=<API_KEY_PREFIX>-<YOUR_API_KEY>
 Environment=OPENAI_BASE_URL=https://<PLATFORM_DOMAIN>/compatible-mode/v1
-Environment=OPENCODE_GO_API_KEY=<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>
-ExecStart=/usr/bin/openclaw gateway
-# ... 其他 systemd 配置
+Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache
+Environment=OPENCLAW_NO_RESPAWN=1
+Type=simple
+User=<YOUR_SSH_USER>
+ExecStart=/usr/bin/openclaw gateway run
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 ### openclaw.json 关键配置
@@ -255,14 +292,18 @@ ExecStart=/usr/bin/openclaw gateway
 {
   "agents": {
     "defaults": {
-      "workspace": "/home/<YOUR_SSH_USER>/.openclaw/workspace",
-      "model": "openai/qwen3.8-max"
+      "model": {
+        "primary": "custom/qwen3.8-max",
+        "fallbacks": ["custom/glm-5.2", "custom/qwen3.8-flash"]
+      }
     }
   },
   "models": {
+    "mode": "replace",
     "providers": {
-      "openai": {
-        "apiKey": "<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>",
+      "custom": {
+        "baseUrl": "https://<PLATFORM_DOMAIN>/compatible-mode/v1",
+        "apiKey": "<API_KEY_PREFIX>-<YOUR_API_KEY>",
         "models": [
           {
             "id": "qwen3.8-max",
@@ -270,22 +311,66 @@ ExecStart=/usr/bin/openclaw gateway
             "api": "openai-completions",
             "contextWindow": 131072,
             "input": ["text", "image"]
+          },
+          {
+            "id": "glm-5.2",
+            "name": "GLM-5.2",
+            "api": "openai-completions",
+            "contextWindow": 131072,
+            "input": ["text"]
+          },
+          {
+            "id": "qwen3.8-flash",
+            "name": "Qwen3.8 Flash",
+            "api": "openai-completions",
+            "contextWindow": 131072,
+            "input": ["text"]
+          },
+          {
+            "id": "kimi-k3",
+            "name": "Kimi K3",
+            "api": "openai-completions",
+            "contextWindow": 131072,
+            "input": ["text", "image"]
+          },
+          {
+            "id": "qwen3.7-plus",
+            "name": "Qwen3.7 Plus",
+            "api": "openai-completions",
+            "contextWindow": 131072,
+            "input": ["text"]
           }
         ]
-      },
-      "opencode-go": {
-        "apiKey": "<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>"
       }
     }
   }
 }
 ```
 
+### ufw 防火墙规则
+
+```bash
+# 默认拒绝所有入站
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# 只放行必要端口
+sudo ufw allow <YOUR_SSH_PORT>/tcp   # SSH
+sudo ufw allow 80/tcp                 # Caddy HTTP
+sudo ufw allow 443/tcp                # VPN (sing-box)
+sudo ufw allow <YOUR_HTTPS_PORT>/tcp  # Caddy HTTPS (Komari 等)
+
+# 启用
+echo 'y' | sudo ufw enable
+```
+
+> 18789（OpenClaw）和 8080（订阅服务）不在放行列表中，被 ufw 默认拒绝。OpenClaw 通过 Caddy 80 端口反代访问。
+
 ### 数据流
 
 ```
-用户 → Caddy (openclaw.<YOUR_DOMAIN>) → Gateway (localhost:18789)
-  → openai provider (OPENAI_BASE_URL env var)
+用户 → Caddy (openclaw.<YOUR_DOMAIN>:80) → Gateway (localhost:18789)
+  → custom provider (baseUrl 指向 <PLATFORM_DOMAIN>)
   → https://<PLATFORM_DOMAIN>/compatible-mode/v1/chat/completions
   → qwen3.8-max 模型
   → 流式回复
@@ -293,16 +378,14 @@ ExecStart=/usr/bin/openclaw gateway
 
 ### <PLATFORM_NAME> 平台可用模型
 
-| 模型 ID | 备注 |
-|---------|------|
-| qwen3.8-max | ✅ 已注册，正在使用 |
-| qwen3.8-flash | 可用，未注册 |
-| qwen3.7-plus | 可用，未注册 |
-| deepseek-v4-flash | 404，不可用 |
-| kimi-k3 | 可用，未注册 |
-| glm-5.2 | 可用，未注册 |
-
-如需切换模型，在 `openclaw.json` 的 `models.providers.openai.models` 数组中添加新模型条目，并修改 `agents.defaults.model`。
+| 模型 ID | 视觉 | 备注 |
+|---------|------|------|
+| qwen3.8-max | ✅ | 默认模型 |
+| glm-5.2 | ❌ | 中文强 |
+| qwen3.8-flash | ❌ | 快速 |
+| kimi-k3 | ✅ | 视觉备选 |
+| qwen3.7-plus | ❌ | 均衡 |
+| deepseek-v4-flash | ❌ | 平台已下线（404），不可用 |
 
 ---
 
@@ -310,40 +393,30 @@ ExecStart=/usr/bin/openclaw gateway
 
 ### 检查状态
 ```bash
-# Gateway 是否在监听
-ss -tlnp | grep 18789
-
-# systemd 状态
-systemctl is-active openclaw
-systemctl status openclaw
-
-# 最近日志
-tail -20 /tmp/openclaw/openclaw-$(date +%F).log | python3 -c "
-import sys,json
-for l in sys.stdin:
-    if not l.strip(): continue
-    try:
-        d=json.loads(l)
-        print(d.get('message','')[:200])
-    except: pass
-"
+ss -tlnp | grep 18789       # Gateway 是否在监听
+systemctl is-active openclaw # systemd 状态
+journalctl -u openclaw --no-pager -n 10  # 最近日志
 ```
 
-### 重启 Gateway（注意内存问题）
+### 重启 Gateway
 ```bash
 # 正常重启
 sudo systemctl restart openclaw
 
-# 如果 crash-loop 了
+# crash-loop 恢复
 sudo systemctl stop openclaw
+sudo systemctl reset-failed openclaw
 rm -f /home/<YOUR_SSH_USER>/.openclaw/logs/stability/*.json
 # 等 5 分钟
 sudo systemctl start openclaw
 ```
 
-### 修改配置后重启
+### 修改配置
 ```bash
-# 编辑配置
+# 读当前配置
+openclaw config get models
+
+# 改配置（用 Python 安全写入 JSON）
 python3 -c "
 import json
 f='/home/<YOUR_SSH_USER>/.openclaw/openclaw.json'
@@ -356,33 +429,21 @@ sudo systemctl restart openclaw
 
 ### 验证 API key 完整性
 ```bash
-# 检查 systemd env var 中的 key 长度
 grep "OPENAI_API_KEY" /etc/systemd/system/openclaw.service | cut -d= -f3 | wc -c
 # 应该是 53（52 字符 + 换行）
 ```
 
-### 测试 <PLATFORM_NAME> 平台连通性
+### ufw 防火墙管理
 ```bash
-curl -s https://<PLATFORM_DOMAIN>/compatible-mode/v1/models \
-  -H "Authorization: Bearer <API_KEY_PREFIX>-XXXXX" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-for m in d.get('data',[]):
-    print(m.get('id',''))
-"
+sudo ufw status verbose    # 查看规则
+sudo ufw allow <PORT>/tcp  # 添加放行
+sudo ufw deny <PORT>/tcp   # 添加拒绝
 ```
 
-### 查看模型请求日志
+### 禁用插件
 ```bash
-grep "model-fetch" /tmp/openclaw/openclaw-$(date +%F).log | tail -10 | python3 -c "
-import sys,json
-for l in sys.stdin:
-    if not l.strip(): continue
-    try:
-        d=json.loads(l)
-        print(d.get('message','')[:300])
-    except: pass
-"
+openclaw plugins disable <plugin_name>
+sudo systemctl restart openclaw
 ```
 
 ---
@@ -391,22 +452,27 @@ for l in sys.stdin:
 
 ```
 聊天报错
-├── "Unknown model: openai/xxx"
-│   └── 模型未注册 → 在 openclaw.json models.providers.openai.models 添加
+├── "Unknown model: xxx/yyy"
+│   ├── provider 名变了 → 更新 agents.defaults.model 引用
+│   └── 模型未注册 → 在 config models.providers.xxx.models 添加
 ├── "authentication failed, HTTP 401"
 │   ├── 检查 config apiKey 是否完整
 │   └── 检查 systemd OPENAI_API_KEY 是否截断（wc -c 验证）
-├── "provider rejected the request schema or tool payload" (400)
-│   ├── 检查模型 api 格式是否为 openai-completions
-│   └── 如果用 opencode-go provider，检查是否被硬编码为 anthropic-messages
-├── "No models available"
-│   └── provider 未配置 apiKey 或 baseUrl
-├── Gateway 崩溃 / 无法访问
-│   ├── 检查 18789 端口: ss -tlnp | grep 18789
-│   ├── crash-loop: 清 stability 记录 + 等 5 分钟
-│   └── 内存不足: 减少插件数量
-└── 页面 502
-    └── Gateway 没起来，检查 systemd 状态
+├── "provider rejected the request schema" (400)
+│   └── 检查模型 api 格式是否为 openai-completions（非 anthropic-messages）
+├── 模型目录出现 30+ 收费模型
+│   ├── 检查是否禁用了 openai 插件
+│   └── 检查自定义 provider 是否设了 baseUrl
+├── Gateway 崩溃 (exit code 78/CONFIG)
+│   ├── 检查 config 是否有不支持的键
+│   └── 跑 openclaw config schema 确认键名
+├── Gateway 崩溃后无法重启
+│   ├── restart-loop breaker → 清 stability + reset-failed + 等 5 分钟
+│   └── 内存不足 → 减少插件
+├── 页面 502
+│   └── Gateway 没起来，检查 systemd + ufw 是否放行 80
+└── 响应慢 (18-20s)
+    └── 内存不足，考虑迁移到 ≥2GB 机器
 ```
 
 ---
@@ -415,10 +481,9 @@ for l in sys.stdin:
 
 | 文件 | 作用 |
 |------|------|
-| `provider-catalog-BFfam1xM.js` | Provider 和模型 catalog 定义（硬编码） |
-| `model-selection-shared-BlLyx1r2.js` | 自定义模型注册逻辑（`buildConfiguredModelCatalog`） |
-| `provider-policy-api-CAxxTyEq.js` | OpenAI baseUrl 解析逻辑（`resolveOpenAIEnvironmentBaseUrl`） |
-| `provider-catalog-BFfam1xM.js` | opencode-go 模型列表和 API 格式硬编码 |
+| `provider-catalog-*.js` | Provider 和模型 catalog 定义（硬编码） |
+| `model-selection-shared-*.js` | 自定义模型注册逻辑（`buildConfiguredModelCatalog`） |
+| `provider-policy-api-*.js` | OpenAI baseUrl 解析逻辑（`resolveOpenAIEnvironmentBaseUrl`） |
 
 路径前缀：`/usr/lib/node_modules/openclaw/dist/`
 
@@ -426,24 +491,31 @@ for l in sys.stdin:
 
 ## 未解决问题 / 已知限制
 
-1. **GCP e2-micro 内存不足**：958MB 跑 OpenClaw 勉强可用，但不能频繁重启
-2. **opencode-go provider 无法用于第三方平台**：baseUrl 和 API 格式都硬编码，只适合 OpenCode 官方网关
-3. **openai provider 不自动发现模型**：第三方平台的模型必须手动在 config 中注册
-4. **Settings 页面 "Test connection" 不准确**：openai provider 的连接测试不使用 `OPENAI_BASE_URL`，会连到 `api.openai.com` 导致误报失败。但实际聊天时 env var 是生效的
-5. **Settings 页面 "Connect a verified AI model" 流程**：对自定义注册的模型仍报 "Unknown model"，但实际聊天不受影响（agent runtime 读的是 config catalog）
+1. **GCP e2-micro 内存不足**：958MB 跑 OpenClaw 勉强可用，响应 18-20 秒，建议 ≥2GB
+2. **rateLimit 无法通过 config 设置**：`gateway.auth.rateLimit` 不是合法键，需通过其他方式实现
+3. **opencode-go provider 无法用于第三方平台**：baseUrl 和 API 格式都硬编码
+4. **openai 插件内置 catalog 无法通过 mode=replace 隐藏**：必须禁用插件
+5. **device pairing 无法关闭**：核心安全机制，token 和密码模式都需要
+6. **Settings 页面 "Test connection" 不准确**：openai provider 的连接测试不使用自定义 baseUrl
 
 ---
 
-## 总结：三个必须同时满足的条件
+## 总结：要让 OpenClaw 连接第三方平台正常工作
 
-要让 OpenClaw 连接第三方 OpenAI 兼容平台（如 <PLATFORM_NAME>）正常工作，必须同时满足：
-
-1. **环境变量正确**：`OPENAI_API_KEY`（完整，未截断）+ `OPENAI_BASE_URL`（指向第三方平台）
-2. **模型注册**：在 `openclaw.json` 的 `models.providers.openai.models` 中手动注册模型
-3. **默认模型设置**：`agents.defaults.model` 设为 `openai/{model_id}`
-
-缺任何一个都会报错，且错误信息不同，容易误导排查方向。
+1. **禁用内置 openai 插件** — 避免自带 30+ 收费模型目录
+2. **创建自定义 provider** — 设 `baseUrl` 指向第三方平台 + 手动注册模型
+3. **设置 `agents.defaults.model`** — 用 `{primary, fallbacks}` 对象格式引用新 provider 名
+4. **环境变量正确** — `OPENAI_API_KEY`（完整）+ `OPENAI_BASE_URL`（指向第三方平台）
+5. **`models.mode = "replace"`** — 只使用配置的 provider
+6. **装 ufw 防火墙** — 只放行必要端口，18789 收回 localhost 走 Caddy 反代
 
 ---
 
-*文档维护：AI 助手| 最后更新：2026-10-14*
+## 版本历史
+
+- **v1（2026-10-14）**：初始部署，10 个坑，openai provider + opencode-go provider
+- **v2（2026-10-15）**：模型配置重构，禁用 openai/opencode-go 插件改用自定义 provider，5 个免费模型，ufw 防火墙，8080 收回 localhost，新增坑 10-16
+
+---
+
+*文档维护：AI 助手 | 最后更新：2026-10-15*
