@@ -11,8 +11,8 @@
 - **SSH**: `ssh -i ~/.ssh/<YOUR_SSH_KEY> -p <YOUR_SSH_PORT> <YOUR_SSH_USER>@<YOUR_VPS_IP>`
 - **域名**: `openclaw.<YOUR_DOMAIN>`（通过 Caddy 反代）
 - **OpenClaw**: npm 全局安装，版本 2026.9.2
-- **AI 后端**: AgentScope 平台 (`platform.agentscope.io`)
-- **API Key**: AgentScope 平台 key，格式 `sk-as-xxxxx`
+- **AI 后端**: <PLATFORM_NAME> 平台 (`<PLATFORM_DOMAIN>`)
+- **API Key**: <PLATFORM_NAME> 平台 key，格式 `<API_KEY_PREFIX>-xxxxx`
 - **反向代理**: Caddy → localhost:18789
 
 ---
@@ -84,33 +84,33 @@ LLM request failed: provider rejected the request schema or tool payload.
 ```
 
 **排查过程**：
-1. 查日志发现请求发到了 `https://opencode.ai/zen/go/v1/messages`（Anthropic Messages 格式 endpoint）
-2. 但 AgentScope 平台只支持 OpenAI 兼容格式（`/v1/chat/completions`）
+1. 查日志发现请求发到了 `https://<PROVIDER_DOMAIN>/zen/go/v1/messages`（Anthropic Messages 格式 endpoint）
+2. 但 <PLATFORM_NAME> 平台只支持 OpenAI 兼容格式（`/v1/chat/completions`）
 3. 查源码 `provider-catalog-BFfam1xM.js`，发现 `qwen3.8-max` 模型被硬编码：
    ```js
    {
      "id": "qwen3.8-max",
      "name": "Qwen3.8 Max",
      "api": "anthropic-messages",  // ← 硬编码，无法通过配置修改
-     "baseUrl": "https://opencode.ai/zen/go"
+     "baseUrl": "https://<PROVIDER_DOMAIN>/zen/go"
    }
    ```
 
-**根因**：OpenClaw 的 opencode-go provider 是为 OpenCode 官方 AI 网关设计的，不是给第三方平台用的。`qwen3.8-max` 这个模型在 catalog 里绑定了 `anthropic-messages` 格式，且 baseUrl 硬编码指向 `opencode.ai`。
+**根因**：OpenClaw 的 opencode-go provider 是为 OpenCode 官方 AI 网关设计的，不是给第三方平台用的。`qwen3.8-max` 这个模型在 catalog 里绑定了 `anthropic-messages` 格式，且 baseUrl 硬编码指向 `<PROVIDER_DOMAIN>`。
 
 **opencode-go provider 模型列表及 API 格式**：
 
 | 模型 ID | API 格式 | 备注 |
 |---------|----------|------|
-| deepseek-v4-pro | openai-completions（默认） | AgentScope 有此模型 |
-| deepseek-v4-flash | openai-completions（默认） | AgentScope 上 404，不可用 |
-| kimi-k3 | openai-completions（默认） | AgentScope 有此模型 |
-| kimi-k2.6 | openai-completions（默认） | AgentScope 无此模型 |
-| gpt-5.6-luna | openai-responses | AgentScope 无此模型 |
-| qwen3.8-max | **anthropic-messages（硬编码）** | AgentScope 有此模型，但格式不兼容 |
-| hy3-preview | 默认 | AgentScope 无此模型 |
+| deepseek-v4-pro | openai-completions（默认） | <PLATFORM_NAME> 有此模型 |
+| deepseek-v4-flash | openai-completions（默认） | <PLATFORM_NAME> 上 404，不可用 |
+| kimi-k3 | openai-completions（默认） | <PLATFORM_NAME> 有此模型 |
+| kimi-k2.6 | openai-completions（默认） | <PLATFORM_NAME> 无此模型 |
+| gpt-5.6-luna | openai-responses | <PLATFORM_NAME> 无此模型 |
+| qwen3.8-max | **anthropic-messages（硬编码）** | <PLATFORM_NAME> 有此模型，但格式不兼容 |
+| hy3-preview | 默认 | <PLATFORM_NAME> 无此模型 |
 
-**教训**：opencode-go provider 的 baseUrl 硬编码指向 `opencode.ai`，即使配了 AgentScope 的 API key，请求也发到 OpenCode 官方服务器而非 AgentScope 平台。不要用 opencode-go provider 连第三方平台。
+**教训**：opencode-go provider 的 baseUrl 硬编码指向 `<PROVIDER_DOMAIN>`，即使配了 <PLATFORM_NAME> 的 API key，请求也发到 OpenCode 官方服务器而非 <PLATFORM_NAME> 平台。不要用 opencode-go provider 连第三方平台。
 
 ---
 
@@ -124,13 +124,13 @@ Unknown model: openai/qwen3.8-max
 ```
 
 **排查过程**：
-1. openai provider 确实通过 `OPENAI_BASE_URL` 环境变量连到了 AgentScope 平台
+1. openai provider 确实通过 `OPENAI_BASE_URL` 环境变量连到了 <PLATFORM_NAME> 平台
 2. 日志里曾有 `status=200` 的成功记录（说明连通性没问题）
 3. 但 agent runtime 层（不是 model-fetch 层）检查模型 catalog，发现 `qwen3.8-max` 不在 openai provider 的已知模型列表中
 4. OpenClaw 的 openai provider 只认识 OpenAI 官方模型名（gpt-4, gpt-5.6-sol 等），不认识第三方平台的模型名
 
 **根因**：OpenClaw 有两层检查：
-- **model-fetch 层**：负责发 HTTP 请求，通过 `OPENAI_BASE_URL` 能正确连到 AgentScope（status=200）
+- **model-fetch 层**：负责发 HTTP 请求，通过 `OPENAI_BASE_URL` 能正确连到 <PLATFORM_NAME>（status=200）
 - **agent runtime 层**：负责工具定义、系统提示词等，会检查模型是否在 catalog 中注册
 
 model-fetch 层能通，但 agent runtime 层拒绝未知模型名。
@@ -141,7 +141,7 @@ model-fetch 层能通，但 agent runtime 层拒绝未知模型名。
   "models": {
     "providers": {
       "openai": {
-        "apiKey": "sk-as-XXXXX",
+        "apiKey": "<API_KEY_PREFIX>-XXXXX",
         "models": [
           {
             "id": "qwen3.8-max",
@@ -181,7 +181,7 @@ openai/qwen3.8-max request failed (authentication failed, HTTP 401)
 ```
 
 **排查过程**：
-1. 检查 systemd service 文件，发现 `OPENAI_API_KEY=sk-as-...WJZE`
+1. 检查 systemd service 文件，发现 `OPENAI_API_KEY=<API_KEY_PREFIX>-...WJZE`
 2. 用 `wc -c` 验证，key 值只有 13 个字符（完整 key 应该是 52 字符）
 3. 这不是 UI 脱敏显示，而是 **systemd 文件里真的存了截断的 key**
 
@@ -190,7 +190,7 @@ openai/qwen3.8-max request failed (authentication failed, HTTP 401)
 **解决**：
 ```bash
 # 修复 systemd env var
-sudo sed -i "s|Environment=OPENAI_API_KEY=.*|Environment=OPENAI_API_KEY=sk-as-完整KEY|" /etc/systemd/system/openclaw.service
+sudo sed -i "s|Environment=OPENAI_API_KEY=.*|Environment=OPENAI_API_KEY=<API_KEY_PREFIX>-完整KEY|" /etc/systemd/system/openclaw.service
 sudo systemctl daemon-reload
 
 # 同时在 openclaw.json config 里也设置 apiKey（双保险）
@@ -214,7 +214,7 @@ sudo systemctl daemon-reload
 2. openai provider 通过环境变量读取 baseUrl，不是从 config 的 `baseUrl` 字段读
 3. 但自定义模型注册时的 `model.baseUrl` 字段可以覆盖 provider 的 baseUrl
 
-**最终方案**：用环境变量 `OPENAI_BASE_URL` 设置 AgentScope 平台地址，不在 config 里设 baseUrl。
+**最终方案**：用环境变量 `OPENAI_BASE_URL` 设置 <PLATFORM_NAME> 平台地址，不在 config 里设 baseUrl。
 
 **教训**：OpenClaw 的 openai provider 读取 baseUrl 的优先级是：model.baseUrl > provider.baseUrl > OPENAI_BASE_URL env var。但 provider 级别的 baseUrl 配置项不被 openai provider 识别。
 
@@ -242,9 +242,9 @@ sudo systemctl daemon-reload
 
 ```ini
 [Service]
-Environment=OPENAI_API_KEY=sk-as-<YOUR_AGENTSCOPE_API_KEY>
-Environment=OPENAI_BASE_URL=https://platform.agentscope.io/compatible-mode/v1
-Environment=OPENCODE_GO_API_KEY=sk-as-<YOUR_AGENTSCOPE_API_KEY>
+Environment=OPENAI_API_KEY=<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>
+Environment=OPENAI_BASE_URL=https://<PLATFORM_DOMAIN>/compatible-mode/v1
+Environment=OPENCODE_GO_API_KEY=<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>
 ExecStart=/usr/bin/openclaw gateway
 # ... 其他 systemd 配置
 ```
@@ -262,7 +262,7 @@ ExecStart=/usr/bin/openclaw gateway
   "models": {
     "providers": {
       "openai": {
-        "apiKey": "sk-as-<YOUR_AGENTSCOPE_API_KEY>",
+        "apiKey": "<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>",
         "models": [
           {
             "id": "qwen3.8-max",
@@ -274,7 +274,7 @@ ExecStart=/usr/bin/openclaw gateway
         ]
       },
       "opencode-go": {
-        "apiKey": "sk-as-<YOUR_AGENTSCOPE_API_KEY>"
+        "apiKey": "<API_KEY_PREFIX>-<YOUR_<PLATFORM_NAME>_API_KEY>"
       }
     }
   }
@@ -286,12 +286,12 @@ ExecStart=/usr/bin/openclaw gateway
 ```
 用户 → Caddy (openclaw.<YOUR_DOMAIN>) → Gateway (localhost:18789)
   → openai provider (OPENAI_BASE_URL env var)
-  → https://platform.agentscope.io/compatible-mode/v1/chat/completions
+  → https://<PLATFORM_DOMAIN>/compatible-mode/v1/chat/completions
   → qwen3.8-max 模型
   → 流式回复
 ```
 
-### AgentScope 平台可用模型
+### <PLATFORM_NAME> 平台可用模型
 
 | 模型 ID | 备注 |
 |---------|------|
@@ -361,10 +361,10 @@ grep "OPENAI_API_KEY" /etc/systemd/system/openclaw.service | cut -d= -f3 | wc -c
 # 应该是 53（52 字符 + 换行）
 ```
 
-### 测试 AgentScope 平台连通性
+### 测试 <PLATFORM_NAME> 平台连通性
 ```bash
-curl -s https://platform.agentscope.io/compatible-mode/v1/models \
-  -H "Authorization: Bearer sk-as-XXXXX" | python3 -c "
+curl -s https://<PLATFORM_DOMAIN>/compatible-mode/v1/models \
+  -H "Authorization: Bearer <API_KEY_PREFIX>-XXXXX" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 for m in d.get('data',[]):
@@ -436,7 +436,7 @@ for l in sys.stdin:
 
 ## 总结：三个必须同时满足的条件
 
-要让 OpenClaw 连接第三方 OpenAI 兼容平台（如 AgentScope）正常工作，必须同时满足：
+要让 OpenClaw 连接第三方 OpenAI 兼容平台（如 <PLATFORM_NAME>）正常工作，必须同时满足：
 
 1. **环境变量正确**：`OPENAI_API_KEY`（完整，未截断）+ `OPENAI_BASE_URL`（指向第三方平台）
 2. **模型注册**：在 `openclaw.json` 的 `models.providers.openai.models` 中手动注册模型
