@@ -8,7 +8,7 @@ OpenWebUI（Docker 容器）配置了 <PROVIDER_NAME> 广东节点的三个模�
 
 - OpenWebUI v0.12.0，Docker 容器，1Panel 管理
 - <PROVIDER_NAME> API base URL：`https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1`
-- 模型：`deepseekv4-flash-guangdong`、`qwen38-27b-guangdong`、`Qwen3.6-35B-guangdong`
+- 模型：`<MODEL_NAME>`、`<MODEL_NAME>`、`<MODEL_NAME>`
 
 ## 根因
 
@@ -103,7 +103,7 @@ async def t():
     async with aiohttp.ClientSession() as s:
         async with s.post('https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1/chat/completions',
             headers={'Authorization':'Bearer <<PROVIDER_NAME>_API_KEY>','Content-Type':'application/json'},
-            json={'model':'deepseekv4-flash-guangdong','messages':[{'role':'user','content':'hi'}],'max_tokens':5}) as r:
+            json={'model':'<MODEL_NAME>','messages':[{'role':'user','content':'hi'}],'max_tokens':5}) as r:
             print(f'Status: {r.status}')
 asyncio.run(t())
 "
@@ -134,7 +134,7 @@ for i in $(seq 1 10); do
     -H "Authorization: Bearer <<PROVIDER_NAME>_API_KEY>" \
     "https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d '{"model":"deepseekv4-flash-guangdong","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+    -d '{"model":"<MODEL_NAME>","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
 done
 
 for i in $(seq 1 10); do
@@ -142,7 +142,7 @@ for i in $(seq 1 10); do
     -H "Authorization: Bearer <<PROVIDER_NAME>_API_KEY>" \
     "https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d '{"model":"deepseekv4-flash-guangdong","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
+    -d '{"model":"<MODEL_NAME>","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
 done
 ```
 
