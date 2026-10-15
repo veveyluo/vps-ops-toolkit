@@ -1,23 +1,23 @@
-# OpenWebUI komect 广东节点 IPv6 中继修复
+# OpenWebUI <PROVIDER_NAME> 广东节点 IPv6 中继修复
 
 ## 问题
 
-OpenWebUI（Docker 容器）配置了 komect 广东节点的三个模型，浏览器使用时报 `Server Connection Error`，但偶尔能短暂回复一次。
+OpenWebUI（Docker 容器）配置了 <PROVIDER_NAME> 广东节点的三个模型，浏览器使用时报 `Server Connection Error`，但偶尔能短暂回复一次。
 
 ## 环境
 
 - OpenWebUI v0.12.0，Docker 容器，1Panel 管理
-- komect API base URL：`https://<KOMECT_DOMAIN>/ai/llm/gw/v1`
+- <PROVIDER_NAME> API base URL：`https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1`
 - 模型：`deepseekv4-flash-guangdong`、`qwen38-27b-guangdong`、`Qwen3.6-35B-guangdong`
 
 ## 根因
 
-komect 域名同时有 A（IPv4）和 AAAA（IPv6）记录：
+<PROVIDER_NAME> 域名同时有 A（IPv4）和 AAAA（IPv6）记录：
 
 | 记录 | 地址 | 从 VPS 可达性 |
 |---|---|---|
-| A | `<KOMECT_IPV4>` | TCP 能连但不稳定，约 60% 失败率 |
-| AAAA | `<KOMECT_IPV6>` | 稳定可达，0% 丢包 |
+| A | `<<PROVIDER_NAME>_IPV4>` | TCP 能连但不稳定，约 60% 失败率 |
+| AAAA | `<<PROVIDER_NAME>_IPV6>` | 稳定可达，0% 丢包 |
 
 **IPv4 不可靠的原因**：IPv4 地址属于中国大陆运营商地址段，从海外 VPS 经中国大陆骨干网路由，中途有 20-60% 丢包。ICMP（ping）100% 被封，但 TCP 443 偶尔能通。
 
@@ -41,25 +41,25 @@ komect 域名同时有 A（IPv4）和 AAAA（IPv6）记录：
 
 ## 修复方案
 
-在 VPS 上用 socat 做 IPv4→IPv6 转发，容器通过宿主机外部 IP 访问 socat，socat 再转发到 komect IPv6 地址。
+在 VPS 上用 socat 做 IPv4→IPv6 转发，容器通过宿主机外部 IP 访问 socat，socat 再转发到 <PROVIDER_NAME> IPv6 地址。
 
 ### 数据流
 
 ```
-容器 → <VPS_IP>:443（宿主机外部 IP）→ socat → [<KOMECT_IPV6>]:443 → komect 服务器
+容器 → <VPS_IP>:443（宿主机外部 IP）→ socat → [<<PROVIDER_NAME>_IPV6>]:443 → <PROVIDER_NAME> 服务器
 ```
 
 ### 步骤 1：创建 socat 服务
 
 ```bash
-cat > /etc/systemd/system/komect-v6-relay.service << 'EOF'
+cat > /etc/systemd/system/<PROVIDER_NAME>-v6-relay.service << 'EOF'
 [Unit]
-Description=komect IPv4→IPv6 relay (socat)
+Description=<PROVIDER_NAME> IPv4→IPv6 relay (socat)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/socat TCP4-LISTEN:443,reuseaddr,fork,bind=0.0.0.0 TCP6:[<KOMECT_IPV6>]:443
+ExecStart=/usr/bin/socat TCP4-LISTEN:443,reuseaddr,fork,bind=0.0.0.0 TCP6:[<<PROVIDER_NAME>_IPV6>]:443
 Restart=always
 RestartSec=3
 
@@ -68,7 +68,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now komect-v6-relay
+systemctl enable --now <PROVIDER_NAME>-v6-relay
 ```
 
 ### 步骤 2：修改 docker-compose.yml
@@ -78,12 +78,12 @@ services:
     open-webui:
         # ... 其他配置不变 ...
         extra_hosts:
-            - <KOMECT_DOMAIN>:<VPS_IP>
+            - <<PROVIDER_NAME>_DOMAIN>:<VPS_IP>
 ```
 
 **注意**：
 - `extra_hosts` 必须指向宿主机外部 IP，不能用 Docker 网关 IP（`172.18.0.1`），因为 Docker bridge 网关不把流量转发到宿主机的 socket
-- 不能用 komect 的 IPv4 地址，因为从 VPS 不可靠（60% 失败率）
+- 不能用 <PROVIDER_NAME> 的 IPv4 地址，因为从 VPS 不可靠（60% 失败率）
 - socat 只转发 TCP，TLS 直通不影响证书验证
 
 ### 步骤 3：重建容器
@@ -101,8 +101,8 @@ docker exec <CONTAINER_NAME> python3 -c "
 import asyncio, aiohttp
 async def t():
     async with aiohttp.ClientSession() as s:
-        async with s.post('https://<KOMECT_DOMAIN>/ai/llm/gw/v1/chat/completions',
-            headers={'Authorization':'Bearer <KOMECT_API_KEY>','Content-Type':'application/json'},
+        async with s.post('https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1/chat/completions',
+            headers={'Authorization':'Bearer <<PROVIDER_NAME>_API_KEY>','Content-Type':'application/json'},
             json={'model':'deepseekv4-flash-guangdong','messages':[{'role':'user','content':'hi'}],'max_tokens':5}) as r:
             print(f'Status: {r.status}')
 asyncio.run(t())
@@ -111,12 +111,12 @@ asyncio.run(t())
 
 ## 后期维护要点
 
-如果后期遇到 komect 模型连不上，按以下顺序排查：
+如果后期遇到 <PROVIDER_NAME> 模型连不上，按以下顺序排查：
 
-1. **查 socat 服务**：`systemctl status komect-v6-relay`——socat 挂了容器就全断
-2. **查 extra_hosts**：必须指向宿主机外部 IP，不是 komect IPv4（不可靠）也不是 Docker 网关（不转发）
+1. **查 socat 服务**：`systemctl status <PROVIDER_NAME>-v6-relay`——socat 挂了容器就全断
+2. **查 extra_hosts**：必须指向宿主机外部 IP，不是 <PROVIDER_NAME> IPv4（不可靠）也不是 Docker 网关（不转发）
 3. **不要改回 IPv4 直连**：IPv4 只有 40% 成功率，会导致偶发"短暂回复然后又不行"
-4. **komect DNS 只有一个 A 记录和一个 AAAA 记录**，没有其他 IPv4 入口
+4. **<PROVIDER_NAME> DNS 只有一个 A 记录和一个 AAAA 记录**，没有其他 IPv4 入口
 5. **容器没有 IPv6 出口**（Docker bridge 网络），必须靠 socat 桥接
 
 ## 诊断方法
@@ -125,22 +125,22 @@ asyncio.run(t())
 
 ```bash
 # DNS 记录
-dig +short A <KOMECT_DOMAIN>
-dig +short AAAA <KOMECT_DOMAIN>
+dig +short A <<PROVIDER_NAME>_DOMAIN>
+dig +short AAAA <<PROVIDER_NAME>_DOMAIN>
 
 # 各跑 10 次对比
 for i in $(seq 1 10); do
   curl -4 --max-time 20 -s -o /dev/null -w "v4 attempt $i: HTTP:%{http_code} connect:%{time_connect}s total:%{time_total}s\n" \
-    -H "Authorization: Bearer <KOMECT_API_KEY>" \
-    "https://<KOMECT_DOMAIN>/ai/llm/gw/v1/chat/completions" \
+    -H "Authorization: Bearer <<PROVIDER_NAME>_API_KEY>" \
+    "https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d '{"model":"deepseekv4-flash-guangdong","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
 done
 
 for i in $(seq 1 10); do
   curl -6 --max-time 20 -s -o /dev/null -w "v6 attempt $i: HTTP:%{http_code} connect:%{time_connect}s total:%{time_total}s\n" \
-    -H "Authorization: Bearer <KOMECT_API_KEY>" \
-    "https://<KOMECT_DOMAIN>/ai/llm/gw/v1/chat/completions" \
+    -H "Authorization: Bearer <<PROVIDER_NAME>_API_KEY>" \
+    "https://<<PROVIDER_NAME>_DOMAIN>/ai/llm/gw/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d '{"model":"deepseekv4-flash-guangdong","messages":[{"role":"user","content":"hi"}],"max_tokens":1}'
 done
@@ -149,13 +149,13 @@ done
 ### 路由跟踪
 
 ```bash
-mtr -n -c 5 --report <KOMECT_IPV4>
+mtr -n -c 5 --report <<PROVIDER_NAME>_IPV4>
 ```
 
 ### SSL 握手测试
 
 ```bash
-echo | openssl s_client -connect <KOMECT_IPV4>:443 -servername <KOMECT_DOMAIN> 2>&1 | head -5
+echo | openssl s_client -connect <<PROVIDER_NAME>_IPV4>:443 -servername <<PROVIDER_NAME>_DOMAIN> 2>&1 | head -5
 ```
 
 ## 踩过的坑
