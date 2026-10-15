@@ -295,6 +295,17 @@ WantedBy=multi-user.target
       "model": {
         "primary": "custom/qwen3.8-max",
         "fallbacks": ["custom/glm-5.2", "custom/qwen3.8-flash"]
+      },
+      "sandbox": {
+        "mode": "off"
+      },
+      "contextLimits": {
+        "memoryGetMaxChars": 50000,
+        "postCompactionMaxChars": 20000
+      },
+      "compaction": {
+        "enabled": true,
+        "mode": "default"
       }
     }
   },
@@ -487,6 +498,78 @@ sudo systemctl restart openclaw
 
 路径前缀：`/usr/lib/node_modules/openclaw/dist/`
 
+### 坑 17：沙箱默认开启，低配机器白吃内存 ⚠️⚠️
+
+**现象**：Gateway 内存占用高，新建会话慢。
+
+**根因**：OpenClaw 默认开启沙箱（sandbox），每个会话都额外起隔离环境，1GB 机器上内存翻倍。
+
+**解决**：`agents.defaults.sandbox.mode = "off"`，关掉沙箱。低配机器省内存最直接的优化。
+
+**社区来源**：GitHub Gist `openclaw-specs.md` 低配部署建议第一条。
+
+---
+
+### 坑 18：上下文窗口不限制，长会话内存累积 ⚠️⚠️
+
+**现象**：会话越聊越慢，内存从 1.8GB 涨到 3.8GB。
+
+**根因**：对话上下文无限累积（10 轮后 150K tokens），工具输出也无限存储，系统提示词每次都重发。
+
+**解决**：配置 `agents.defaults.contextLimits`：
+```json
+{
+  "contextLimits": {
+    "memoryGetMaxChars": 50000,
+    "postCompactionMaxChars": 20000
+  }
+}
+```
+限制 memory_get 返回最多 5 万字符，压缩后最多 2 万字符。
+
+**社区来源**：eastondev.com 性能优化指南（实测 23s → 4s）。
+
+---
+
+### 坑 19：长会话不自动压缩，内存持续增长 ⚠️⚠️
+
+**现象**：同坑 18 — 长会话内存不断增长。
+
+**根因**：OpenClaw 有内置 compaction（自动压缩上下文）功能但可能没开。
+
+**解决**：配置 `agents.defaults.compaction`：
+```json
+{
+  "compaction": {
+    "enabled": true,
+    "mode": "default"
+  }
+}
+```
+
+**社区来源**：同上。
+
+---
+
+## 社区低配优化方案汇总（2026-10-15 搜刮）
+
+搜索了国外论坛 + GitHub + 官方文档，整理出 11 条低配机器优化建议。我们的部署已覆盖 8 条，本次补上剩 3 条。
+
+| 优化项 | 社区建议 | 我们已做？ |
+|--------|---------|-----------|
+| 禁用沙箱 | `sandbox.mode = "off"` | ✅ 本次补上 |
+| 限制上下文窗口 | 减少 token 消耗 | ✅ 本次补上 |
+| 自动压缩长会话 | compaction enabled | ✅ 本次补上 |
+| 定期重置会话 | 长会话累积上下文吃内存 | ✅ 已有 daily restart cron |
+| 智能模型切换 | 日常用 flash，复杂切 max | ✅ 5 个模型可选 |
+| 禁用不必要技能 | 只保留必要插件 | ✅ 已砍到 memory-core |
+| 单通道运行 | 每通道多吃 5-10MB | ✅ 只有 Web UI |
+| Swap 必备 | RAM < 1GB 必须配 swap | ✅ 2GB swap |
+| NODE_OPTIONS 调优 | `--max-old-space-size` 设合理值 | ✅ 已设 768 |
+| NODE_COMPILE_CACHE | 减少重复编译 | ✅ 已设 |
+| 不用本地 TTS | 用 API 方式 | ✅ 没开 TTS |
+| 走 SSH 隧道访问 | 不公网暴露 gateway | ✅ ufw + Caddy 反代 |
+
 ---
 
 ## 未解决问题 / 已知限制
@@ -508,6 +591,8 @@ sudo systemctl restart openclaw
 4. **环境变量正确** — `OPENAI_API_KEY`（完整）+ `OPENAI_BASE_URL`（指向第三方平台）
 5. **`models.mode = "replace"`** — 只使用配置的 provider
 6. **装 ufw 防火墙** — 只放行必要端口，18789 收回 localhost 走 Caddy 反代
+7. **禁用沙箱** — `sandbox.mode = "off"`，低配机器省内存
+8. **限制上下文 + 自动压缩** — 防止长会话内存累积
 
 ---
 
@@ -515,7 +600,8 @@ sudo systemctl restart openclaw
 
 - **v1（2026-10-14）**：初始部署，10 个坑，openai provider + opencode-go provider
 - **v2（2026-10-15）**：模型配置重构，禁用 openai/opencode-go 插件改用自定义 provider，5 个免费模型，ufw 防火墙，8080 收回 localhost，新增坑 10-16
+- **v3（2026-10-15）**：社区低配优化方案补齐，禁用沙箱 + 限制上下文窗口 + 自动压缩，新增坑 17-19 + 社区优化汇总表，11 条优化全部到位
 
 ---
 
-*文档维护：AI 助手 | 最后更新：2026-10-15*
+*文档维护：AI 助手 | 最后更新：2026-10-15 v3*
